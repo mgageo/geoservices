@@ -165,8 +165,6 @@ geoservices_web_wmts_capabilities <- function(catalogue = "services-web-experts"
   library(janitor)
   library(rio)
   carp("les services wmts")
-  Format <- "%sGetTile&VERSION=1.0.0&LAYER=%s&STYLE=normal&TILEMATRIXSET=PM&TILEMATRIX=13&TILEROW=2845&TILECOL=4059&FORMAT=image/jpeg"
-  FormatImg <- '<h3>%s</h3><img src="%s" alt="%s">'
   dsn <- sprintf("%s/%s.csv", varDir, catalogue)
   df0 <- rio::import(dsn, encoding = "UTF-8")
   df <- df0 %>%
@@ -203,16 +201,44 @@ geoservices_web_wmts_capabilities_html <- function(catalogue = "services-web-exp
   library(tidyverse)
   library(janitor)
   library(rio)
-  FormatRequest <- "%sGetTile&VERSION=1.0.0&LAYER=%s&STYLE=%s&TILEMATRIXSET=%s&TILEMATRIX=13&TILEROW=2845&TILECOL=4059&FORMAT=%s"
+  TILEMATRIX <- 13
+  TILEROW <- 2845
+  TILECOL <- 4059
+  FormatRequest <- "%sGetTile&VERSION=1.0.0&LAYER=%s&STYLE=%s&TILEMATRIXSET=%s&TILEMATRIX=%s&TILEROW=%s&TILECOL=%s&FORMAT=%s"
   FormatImg <- '<h3>%s</h3><img src="%s" alt="%s">'
   dsn <- sprintf("%s/%s_capabilities.csv", varDir, catalogue)
   df <- rio::import(dsn, encoding = "UTF-8") %>%
-    glimpse() %>%
-    filter(TileMatrix == "13") %>%
+    filter(Format != "application/x-protobuf") %>% # vecteur tuilé
+    filter(TileMatrix == TILEMATRIX) %>%
+    filter(TILEROW > MinTileRow & TILEROW < MaxTileRow) %>%
+    filter(TILECOL > MinTileCol & TILECOL < MaxTileCol) %>%
     mutate(url = gsub("[^=]*$", "", url, perl = TRUE)) %>%
-    mutate(request = sprintf(FormatRequest, url, Identifier, style, TileMatrixSet, Format)) %>%
-    mutate(img = sprintf(FormatImg, Title, request, Title))
+    mutate(request = sprintf(FormatRequest
+      , url
+      , Identifier
+      , style
+      , TileMatrixSet
+      , TILEMATRIX
+      , TILEROW
+      , TILECOL
+      , Format
+    )) %>%
+    mutate(img = sprintf(FormatImg, Title, request, Title)) %>%
+    glimpse()
+  html_entete <- '<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>wmts capabilities</title>
+</head>
+<body>
+'
+  html_pied <- '
+</body>
+</html>
+'
   html <- paste(df$img, collapse="<br>\n")
+  html <- paste(html_entete, html, html_pied, collapse = "\n")
   dsn <- sprintf("%s/%s_capabilities.html", varDir, catalogue)
   write(html, dsn)
   carp("dsn: %s", dsn)
@@ -234,47 +260,15 @@ geoservices_capabilities_get <- function(df, force = FALSE) {
   return(invisible(x))
 }
 
-#
-# https://urbandatapalette.com/post/2021-03-xml-dataframe-r/
-geoservices_capabilities_parse_html <- function(x, force = FALSE) {
-  library(xml2)
-  library(rvest)
-  carp()
-  layerNodes <<- xml_find_all(x, ".//layer")
-  df <- data.frame()
-  variables <- c("title", "identifier", "format", "tilematrixset", "wgs84boundingbox")
-  for (layerNode in layerNodes) {
-    df1 <- data.frame()
-    for (v in variables) {
-      xp <- sprintf(".//%s", v)
-      t <- xml_find_first(layerNode, xp) %>%
-        xml_text()
-      df1[1, v] <- t
-    }
-    carp("identifier: %s", df1[1, "identifier"])
-    style <<- xml_find_first(layerNode, ".//style")
-    identifier <<- xml_text(xml_find_first(style, ".//identifier"))
-    stop("****")
-    tmls <- xml_find_all(layerNode, ".//tilematrixlimits")
-    tmls.df <- data.frame()
-    for(tml in tmls) {
-      tml.df <- geoservices_xml2df(tml)
-      tmls.df <- rbind(tmls.df, tml.df)
-    }
-    tmls.df <- tmls.df %>%
-      mutate(identifier = df1[[1, "identifier"]])
-    df1 <- df1 %>%
-      left_join(tmls.df, by = c("identifier"))
-    df <- rbind(df, df1)
-  }
-  return(invisible(df))
-}
+
 #
 # transformation de l'xml en dataframe
 # deux solutions :
 # - read_xml : assez complexe
 # - read_html : normalement plus simple
-# !! mais pb avec style
+#
+# pour visualiser l'arborescence xml
+# https://jsonformatter.org/xml-formatter : conserve la case
 #
 # https://urbandatapalette.com/post/2021-03-xml-dataframe-r/
 # read_xml
@@ -312,6 +306,42 @@ geoservices_capabilities_parse_xml <- function(x, force = FALSE) {
       mutate(identifier = df1[[1, "ows:Identifier"]])
     df1 <- df1 %>%
       left_join(tmls.df, by = c("ows:Identifier" = "identifier"))
+    df <- rbind(df, df1)
+  }
+  return(invisible(df))
+}
+#
+# https://urbandatapalette.com/post/2021-03-xml-dataframe-r/
+# !! mais pb avec style
+geoservices_capabilities_parse_html <- function(x, force = FALSE) {
+  library(xml2)
+  library(rvest)
+  carp()
+  layerNodes <<- xml_find_all(x, ".//layer")
+  df <- data.frame()
+  variables <- c("title", "identifier", "format", "tilematrixset", "wgs84boundingbox")
+  for (layerNode in layerNodes) {
+    df1 <- data.frame()
+    for (v in variables) {
+      xp <- sprintf(".//%s", v)
+      t <- xml_find_first(layerNode, xp) %>%
+        xml_text()
+      df1[1, v] <- t
+    }
+    carp("identifier: %s", df1[1, "identifier"])
+    style <<- xml_find_first(layerNode, ".//style")
+    identifier <<- xml_text(xml_find_first(style, ".//identifier"))
+    stop("****")
+    tmls <- xml_find_all(layerNode, ".//tilematrixlimits")
+    tmls.df <- data.frame()
+    for(tml in tmls) {
+      tml.df <- geoservices_xml2df(tml)
+      tmls.df <- rbind(tmls.df, tml.df)
+    }
+    tmls.df <- tmls.df %>%
+      mutate(identifier = df1[[1, "identifier"]])
+    df1 <- df1 %>%
+      left_join(tmls.df, by = c("identifier"))
     df <- rbind(df, df1)
   }
   return(invisible(df))
